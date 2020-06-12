@@ -61,6 +61,7 @@ class Measurement(db.Entity):
     config = orm.Required(Config)
 
     node_id = orm.Required(str)
+    channel_id = orm.Required(int)
     timestamp = orm.Required(datetime)
 
     data = orm.Required(orm.Json)
@@ -249,6 +250,7 @@ def decode_data_message(entry_id, msg, payload):
             config=config,
             bundle=bundle,
             node_id=node_id,
+            channel_id=chan_id,
             timestamp=parse_date(timestamp),
             data=data,
         )
