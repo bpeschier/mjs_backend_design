@@ -2,6 +2,7 @@
 # vim:fileencoding=utf8
 # pylint: disable=missing-docstring
 
+from datetime import datetime, timezone
 import logging
 import os
 import json
@@ -305,7 +306,7 @@ def process_data(msg_obj, payload):
     try:
         last_counter = last_counter_seen[node_id]
         # If the node was rebooted, simulate a new config
-        if last_counter < msg_counter:
+        if last_counter > msg_counter:
             generate_config = True
     except KeyError:
         generate_config = True
@@ -375,7 +376,10 @@ def main():
         try:
             for message_bytes in process_data(msg_obj, payload):
                 logging.debug("Producing new message: %s", message_bytes)
-                redis_server.xadd(redis_stream, {"payload": message_bytes})
+                redis_server.xadd(redis_stream, {
+                    "payload": message_bytes,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
 
         # pylint: disable=broad-except
         except Exception as ex:
