@@ -158,42 +158,100 @@ def process_data(msg_obj, payload):
         "measured:size": 10,
     }
 
+    extra_config = {
+        "item_type": "channel",
+        "channel_id": 8,
+    }
+
     data = []
 
     port = msg_obj["port"]
     length = len(payload)
+    have_supply = False
+    have_battery = False
+    have_firmware = False
+    have_lux = False
+    have_pm = False
+    have_extra = False
     if port == 10:
-        # Legacy packet
-        if length < 9 or length > 11:
+        # Legacy packet without firmware_version, with or without supply
+        # and battery
+        if length == 9:
+            pass
+        elif length == 10:
+            have_supply = True
+        elif length == 11:
+            have_supply = True
+            have_battery = True
+        else:
             logging.warning(
-                "Invalid packet received on port %s with length %s", port, length
+                "Invalid packet received on port {} with length {}".format(port, length)
             )
             return
     elif port == 11:
         # Packet without lux, with or without 1 byte battery measurement, with
         # or without 4-byte particulate matter
-        if length < 11 or 12 < length < 15 or length > 16:
+        have_firmware = True
+        have_supply = True
+        if length == 11:
+            pass
+        elif length == 12:
+            have_battery = True
+        elif length == 15:
+            have_pm = True
+        elif length == 16:
+            have_battery = True
+            have_pm = True
+        else:
             logging.warning(
-                "Invalid packet received on port %s with length %s", port, length
+                "Invalid packet received on port {} with length {}".format(port, length)
             )
             return
     elif port == 12:
         # Packet with 2-byte lux, with or without 1 byte battery measurement, with or
         # without 4-byte particulate matter
-        if length < 13 or 14 < length < 17 or length > 18:
+        have_firmware = True
+        have_supply = True
+        have_lux = True
+        if length == 13:
+            pass
+        elif length == 14:
+            have_battery = True
+        elif length == 17:
+            have_pm = True
+        elif length == 18:
+            have_battery = True
+            have_pm = True
+        else:
             logging.warning(
-                "Invalid packet received on port %s with length %s", port, length
+                "Invalid packet received on port {} with length {}".format(port, length)
             )
             return
+    elif port == 13:
+        # Packet starting with a flag byte that indicates which of the
+        # optional values are present.
+        have_firmware = True
+        have_supply = True
+        have_lux = True
+        have_lux = stream.read("bool")
+        have_pm = stream.read("bool")
+        have_battery = stream.read("bool")
+        # 4 bits unused
+        stream.read("uint:4")
+        have_extra = stream.read("bool")
+        # In this packet, the lux is scaled to allow larger values
+        lux_config["divider"] = 4
     else:
-        logging.warning("Ignoring message with unknown port: %s", port)
+        logging.warning("Ignoring message with unknown port: {}".format(port))
         return
 
-    if port != 10:
+    if have_firmware:
         node_config["firmware_version"] = stream.read("uint:8")
 
     # Position
-    data.append({"channel_id": 0, "value": [stream.read("int:24"), stream.read("int:24")]})
+    data.append(
+        {"channel_id": 0, "value": [stream.read("int:24"), stream.read("int:24")]}
+    )
 
     # Temperature
     data.append({"channel_id": 1, "value": stream.read("int:12")})
@@ -201,23 +259,44 @@ def process_data(msg_obj, payload):
     # Humidity
     data.append({"channel_id": 2, "value": stream.read("int:12")})
 
-    if port >= 11 or len(stream) - stream.bitpos >= 8:
+    if have_supply:
         config.append(vcc_config)
         data.append({"channel_id": 3, "value": stream.read("uint:8")})
 
-    if port == 12:
+    if have_lux:
         config.append(lux_config)
         data.append({"channel_id": 5, "value": stream.read("uint:16")})
 
-    if len(stream) - stream.bitpos >= 32:
+    if have_pm:
         config.append(pm25_config)
         data.append({"channel_id": 6, "value": stream.read("uint:16")})
         config.append(pm10_config)
         data.append({"channel_id": 7, "value": stream.read("uint:16")})
 
-    if len(stream) - stream.bitpos >= 8:
+    if have_battery:
         config.append(battery_config)
         data.append({"channel_id": 4, "value": stream.read("uint:8")})
+
+    if have_extra:
+        # Extra values are encoded as pairs of size and value, where size
+        # is always 6 bits and the value is size+1 bits long.
+        extra_value = []
+        while stream.bitpos < len(stream):
+            if len(stream) - stream.bitpos < 5:
+                # This can happen due to rounding to whole bytes
+                break
+            # Add 1 to allow 1-32 bits rather than 0-31
+            bits = stream.read("uint:5") + 1
+            if len(stream) - stream.bitpos < bits:
+                # This can happen due to rounding to whole bytes, in
+                # which case the bits should be all-ones
+                break
+            value = stream.read(bits).uint
+            # Just store extra values in the list
+            extra_value.append(value)
+
+        config.append(extra_config)
+        data.append({"channel_id": 8, "value": extra_value})
 
     node_id = make_ttn_node_id(msg_obj)
     msg_counter = msg_obj["counter"]
